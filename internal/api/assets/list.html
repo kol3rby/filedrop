@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Slug}} · filedrop</title>
+{{template "style"}}
+</head>
+<body>
+<main>
+<h1>{{.Slug}}</h1>
+{{if .CanUpload}}
+<label class="dropzone" id="dropzone" data-url="{{.UploadURL}}" data-max="{{.MaxSize}}">
+  <input type="file" multiple>
+  <strong>Drop files here</strong> or click to choose
+  <span class="muted">Up to {{size .MaxSize}} per file. Uploading an existing name adds a new version.</span>
+</label>
+<ul id="uploads" class="uploads"></ul>
+{{end}}
+{{if not .Groups}}
+<p class="muted">No file in this slug. Upload one with:</p>
+<pre><code>curl --data-binary @&lt;file&gt; {{.BaseURL}}/{{.Slug}}/&lt;filename&gt;</code></pre>
+{{else}}
+<p class="muted">Upload a new file or a new version with
+<code>curl --data-binary @&lt;file&gt; {{.BaseURL}}/{{.Slug}}/&lt;filename&gt;</code></p>
+{{range .Groups}}
+<h2><a href="{{.LatestURL}}">{{.Name}}</a>
+  <button class="delete" data-url="{{.LatestURL}}" data-label="{{.Name}} (all versions)">Delete file</button></h2>
+<table>
+  <thead><tr><th>Version</th><th>Size</th><th>Created</th><th>Type</th><th>SHA-256</th><th></th></tr></thead>
+  <tbody>
+  {{$latest := .LatestURL}}
+  {{range .Versions}}
+  <tr>
+    <td><a href="{{$latest}}?version={{.Version}}">v{{.Version}}</a></td>
+    <td>{{size .Size}}</td>
+    <td>{{date .CreatedAt}}</td>
+    <td><code>{{.ContentType}}</code></td>
+    <td><code title="{{.SHA256}}">{{short .SHA256}}</code></td>
+    <td><button class="delete" data-url="{{$latest}}?version={{.Version}}" data-label="{{.Filename}} v{{.Version}}">Delete</button></td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
+<p class="muted"><a href="/">Documentation</a></p>
+</main>
+<script>
+const zone = document.getElementById("dropzone");
+if (zone) {
+  const input = zone.querySelector("input");
+  const list = document.getElementById("uploads");
+  const max = Number(zone.dataset.max);
+
+  // A file dropped outside the zone must not make the browser navigate to it.
+  for (const type of ["dragover", "drop"]) document.addEventListener(type, (e) => e.preventDefault());
+  zone.addEventListener("dragover", () => zone.classList.add("over"));
+  zone.addEventListener("dragleave", (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove("over"); });
+  zone.addEventListener("drop", (e) => { zone.classList.remove("over"); uploadAll(e.dataTransfer.files); });
+  input.addEventListener("change", () => { uploadAll(input.files); input.value = ""; });
+
+  let busy = false;
+  async function uploadAll(fileList) {
+    const files = [...fileList];
+    if (!files.length || busy) return;
+    busy = true;
+    let ok = true;
+    for (const file of files) ok = (await upload(file)) && ok;
+    busy = false;
+    if (ok) location.reload();
+  }
+
+  function upload(file) {
+    const li = document.createElement("li");
+    const label = document.createElement("span");
+    const bar = document.createElement("progress");
+    label.textContent = file.name;
+    li.append(label, bar);
+    list.append(li);
+    const fail = (msg) => {
+      bar.remove();
+      li.classList.add("error");
+      label.textContent = file.name + ": " + msg;
+      return false;
+    };
+    if (file.size === 0) return Promise.resolve(fail("empty file"));
+    if (file.size > max) return Promise.resolve(fail("larger than the maximum upload size"));
+
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", zone.dataset.url + "?filename=" + encodeURIComponent(file.name));
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) bar.value = e.loaded / e.total; };
+      xhr.onload = () => {
+        if (xhr.status === 201) {
+          bar.value = 1;
+          li.classList.add("done");
+          resolve(true);
+        } else {
+          resolve(fail(xhr.status + " " + xhr.responseText.replace(/^error: /, "").trim()));
+        }
+      };
+      xhr.onerror = () => resolve(fail("network error"));
+      xhr.send(file); // raw body; the browser sets Content-Type from the file when known
+    });
+  }
+}
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button.delete");
+  if (!btn || !confirm("Delete " + btn.dataset.label + "?")) return;
+  btn.disabled = true;
+  const res = await fetch(btn.dataset.url, { method: "DELETE" });
+  if (res.ok) {
+    location.reload();
+  } else {
+    alert("Delete failed: " + res.status + " " + (await res.text()));
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
